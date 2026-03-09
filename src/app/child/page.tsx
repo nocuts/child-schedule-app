@@ -4,19 +4,20 @@ import { useState, useEffect } from 'react'
 
 type Status = 'idle' | 'loading' | 'success' | 'error' | 'denied'
 
-// 포그라운드 메시지 핸들러 (앱이 열려 있을 때 알림 표시)
 async function setupForegroundHandler() {
   try {
     const { getMessaging, onMessage } = await import('firebase/messaging')
     const { app } = await import('@/lib/firebase-client')
     const messagingInstance = getMessaging(app)
     onMessage(messagingInstance, (payload) => {
+      console.log('[FCM] 포그라운드 알림 수신:', payload)
       const title = payload.notification?.title || '새 알림'
       const body = payload.notification?.body || ''
       new Notification(title, { body, icon: '/icon-192x192.png' })
     })
-  } catch {
-    // 메시징 미지원 환경 무시
+    console.log('[FCM] 포그라운드 핸들러 등록 완료')
+  } catch (e) {
+    console.error('[FCM] 포그라운드 핸들러 등록 실패:', e)
   }
 }
 
@@ -29,9 +30,11 @@ export default function ChildPage() {
   useEffect(() => {
     const supported = 'Notification' in window && 'serviceWorker' in navigator
     setIsSupported(supported)
+    console.log('[FCM] 알림 지원 여부:', supported)
+    console.log('[FCM] 현재 알림 권한 상태:', Notification.permission)
 
-    // 이미 알림 권한이 허용된 경우 포그라운드 핸들러 즉시 설정
     if (supported && Notification.permission === 'granted') {
+      console.log('[FCM] 기존 권한 허용됨 → 포그라운드 핸들러 설정')
       setupForegroundHandler()
     }
   }, [])
@@ -43,7 +46,10 @@ export default function ChildPage() {
 
     try {
       // 1. 알림 권한 요청
+      console.log('[FCM] 알림 권한 요청 중...')
       const permission = await Notification.requestPermission()
+      console.log('[FCM] 알림 권한 결과:', permission)
+
       if (permission !== 'granted') {
         setStatus('denied')
         setMessage('알림 권한이 거부되었습니다. 브라우저 설정에서 알림을 허용해주세요.')
@@ -51,20 +57,28 @@ export default function ChildPage() {
       }
 
       // 2. 서비스 워커 등록
+      console.log('[FCM] Service Worker 등록 시도...')
       const registration = await navigator.serviceWorker.register('/firebase-messaging-sw.js')
+      console.log('[FCM] Service Worker 등록 완료:', registration)
+      console.log('[FCM] SW 상태 - active:', registration.active?.state, '/ installing:', registration.installing?.state, '/ waiting:', registration.waiting?.state)
 
       // SW가 installing 상태이면 activated 될 때까지 대기
       if (!registration.active) {
+        console.log('[FCM] SW 활성화 대기 중...')
         await new Promise<void>((resolve) => {
           const sw = registration.installing || registration.waiting
           if (!sw) { resolve(); return }
           sw.addEventListener('statechange', (e) => {
-            if ((e.target as ServiceWorker).state === 'activated') resolve()
+            const state = (e.target as ServiceWorker).state
+            console.log('[FCM] SW 상태 변경:', state)
+            if (state === 'activated') resolve()
           })
         })
+        console.log('[FCM] SW 활성화 완료')
       }
 
-      // 3. FCM 토큰 발급 (동적 import - SSR 방지)
+      // 3. FCM 토큰 발급
+      console.log('[FCM] FCM 토큰 요청 중...')
       const { getMessaging, getToken, onMessage } = await import('firebase/messaging')
       const { app } = await import('@/lib/firebase-client')
       const messagingInstance = getMessaging(app)
@@ -77,29 +91,36 @@ export default function ChildPage() {
       if (!token) {
         throw new Error('FCM 토큰을 가져올 수 없습니다. VAPID 키나 Firebase 설정을 확인하세요.')
       }
+      console.log('[FCM] FCM 토큰:', token)
 
-      // 4. 포그라운드 메시지 핸들러 설정 (앱이 열려 있을 때)
+      // 4. 포그라운드 메시지 핸들러 등록
       onMessage(messagingInstance, (payload) => {
+        console.log('[FCM] 포그라운드 알림 수신:', payload)
         const title = payload.notification?.title || '새 알림'
         const body = payload.notification?.body || ''
         new Notification(title, { body, icon: '/icon-192x192.png' })
       })
+      console.log('[FCM] 포그라운드 핸들러 등록 완료')
 
-      // 5. 토큰을 서버에 저장
+      // 5. 토큰 서버 저장
+      console.log('[FCM] 토큰 서버 저장 중...')
       const res = await fetch('/api/fcm-token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ child_name: childName.trim(), token }),
       })
 
+      const resData = await res.json()
+      console.log('[FCM] 서버 저장 응답:', resData)
+
       if (!res.ok) {
-        const data = await res.json()
-        throw new Error(data.error || '저장 실패')
+        throw new Error(resData.error || '저장 실패')
       }
 
       setStatus('success')
       setMessage(`${childName.trim()}의 기기가 등록되었습니다! 이제 알림을 받을 수 있어요.`)
     } catch (err: unknown) {
+      console.error('[FCM] 등록 오류:', err)
       setStatus('error')
       const errorMessage = err instanceof Error ? err.message : '알 수 없는 오류'
       setMessage(`오류: ${errorMessage}`)
@@ -110,7 +131,6 @@ export default function ChildPage() {
     <main className="min-h-screen flex items-center justify-center px-4">
       <div className="w-full max-w-sm space-y-6">
 
-        {/* 헤더 */}
         <div className="text-center space-y-2">
           <div className="text-5xl">🔔</div>
           <h1 className="text-2xl font-bold text-gray-800">알림 등록</h1>
@@ -119,7 +139,6 @@ export default function ChildPage() {
           </p>
         </div>
 
-        {/* 카드 */}
         <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 space-y-4">
           {isSupported === null ? (
             <div className="py-4" />
@@ -132,11 +151,7 @@ export default function ChildPage() {
               <div className="text-4xl">✅</div>
               <p className="font-semibold text-green-600">{message}</p>
               <button
-                onClick={() => {
-                  setStatus('idle')
-                  setChildName('')
-                  setMessage('')
-                }}
+                onClick={() => { setStatus('idle'); setChildName(''); setMessage('') }}
                 className="text-sm text-gray-400 underline"
               >
                 다른 이름으로 등록
