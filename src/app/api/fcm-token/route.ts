@@ -14,8 +14,12 @@ export async function POST(request: Request) {
     .insert({ child_name, token })
 
   if (error) {
+    // 23505: unique_violation - 이미 등록된 토큰
+    if (error.code === '23505') {
+      return NextResponse.json({ success: true, message: '이미 등록되었습니다.' })
+    }
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
 
-  return NextResponse.json({ success: true })
+  return NextResponse.json({ success: true, message: '등록되었습니다.' })
 }
