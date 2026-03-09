@@ -4,6 +4,22 @@ import { useState, useEffect } from 'react'
 
 type Status = 'idle' | 'loading' | 'success' | 'error' | 'denied'
 
+// 포그라운드 메시지 핸들러 (앱이 열려 있을 때 알림 표시)
+async function setupForegroundHandler() {
+  try {
+    const { getMessaging, onMessage } = await import('firebase/messaging')
+    const { app } = await import('@/lib/firebase-client')
+    const messagingInstance = getMessaging(app)
+    onMessage(messagingInstance, (payload) => {
+      const title = payload.notification?.title || '새 알림'
+      const body = payload.notification?.body || ''
+      new Notification(title, { body, icon: '/icon-192x192.png' })
+    })
+  } catch {
+    // 메시징 미지원 환경 무시
+  }
+}
+
 export default function ChildPage() {
   const [childName, setChildName] = useState('')
   const [status, setStatus] = useState<Status>('idle')
@@ -11,12 +27,17 @@ export default function ChildPage() {
   const [isSupported, setIsSupported] = useState<boolean | null>(null)
 
   useEffect(() => {
-    setIsSupported('Notification' in window && 'serviceWorker' in navigator)
+    const supported = 'Notification' in window && 'serviceWorker' in navigator
+    setIsSupported(supported)
+
+    // 이미 알림 권한이 허용된 경우 포그라운드 핸들러 즉시 설정
+    if (supported && Notification.permission === 'granted') {
+      setupForegroundHandler()
+    }
   }, [])
 
   async function handleRegister() {
     if (!childName.trim()) return
-
     setStatus('loading')
     setMessage('')
 
@@ -31,10 +52,20 @@ export default function ChildPage() {
 
       // 2. 서비스 워커 등록
       const registration = await navigator.serviceWorker.register('/firebase-messaging-sw.js')
-      await navigator.serviceWorker.ready
+
+      // SW가 installing 상태이면 activated 될 때까지 대기
+      if (!registration.active) {
+        await new Promise<void>((resolve) => {
+          const sw = registration.installing || registration.waiting
+          if (!sw) { resolve(); return }
+          sw.addEventListener('statechange', (e) => {
+            if ((e.target as ServiceWorker).state === 'activated') resolve()
+          })
+        })
+      }
 
       // 3. FCM 토큰 발급 (동적 import - SSR 방지)
-      const { getMessaging, getToken } = await import('firebase/messaging')
+      const { getMessaging, getToken, onMessage } = await import('firebase/messaging')
       const { app } = await import('@/lib/firebase-client')
       const messagingInstance = getMessaging(app)
 
@@ -44,10 +75,17 @@ export default function ChildPage() {
       })
 
       if (!token) {
-        throw new Error('FCM 토큰을 가져올 수 없습니다.')
+        throw new Error('FCM 토큰을 가져올 수 없습니다. VAPID 키나 Firebase 설정을 확인하세요.')
       }
 
-      // 4. 토큰을 서버에 저장
+      // 4. 포그라운드 메시지 핸들러 설정 (앱이 열려 있을 때)
+      onMessage(messagingInstance, (payload) => {
+        const title = payload.notification?.title || '새 알림'
+        const body = payload.notification?.body || ''
+        new Notification(title, { body, icon: '/icon-192x192.png' })
+      })
+
+      // 5. 토큰을 서버에 저장
       const res = await fetch('/api/fcm-token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -84,7 +122,6 @@ export default function ChildPage() {
         {/* 카드 */}
         <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 space-y-4">
           {isSupported === null ? (
-            // 서버/클라이언트 hydration 전 빈 상태
             <div className="py-4" />
           ) : !isSupported ? (
             <p className="text-center text-sm text-red-500 py-4">
